@@ -1,64 +1,75 @@
+// File: api/char/mal.js
+
 import cheerio from 'cheerio';
+import axios from 'axios';
 
 export default async function handler(req, res) {
-  const { name, id } = req.query;
+  const { id, name } = req.query;
 
-  // Search character by name
-  if (name) {
-    try {
-      const q = encodeURIComponent(name);
-      const html = await fetch(`https://myanimelist.net/character.php?q=${q}`).then(r => r.text());
-      const $ = cheerio.load(html);
-      const results = [];
+  try {
+    let url;
+    if (id) {
+      url = `https://myanimelist.net/character/${id}`;
+    } else if (name) {
+      const searchUrl = `https://myanimelist.net/character.php?q=${encodeURIComponent(name)}`;
+      const { data: searchHtml } = await axios.get(searchUrl);
+      const $search = cheerio.load(searchHtml);
+      const firstResult = $search('.characters-favorites-ranking-table a').attr('href');
+      if (!firstResult) {
+        return res.status(404).json({ error: 'Character not found.' });
+      }
+      url = firstResult;
+    } else {
+      return res.status(400).json({ error: 'Please provide either id or name parameter.' });
+    }
 
-      $('table tr').each((_, el) => {
-        const charLink = $(el).find('a').attr('href') || '';
-        const title = $(el).find('a strong').text();
-        const img = $(el).find('img').attr('data-src') || $(el).find('img').attr('src');
-        const about = $(el).find('.pt4').text().trim();
-        const idMatch = charLink?.match(/character\/(\d+)/);
+    const { data: html } = await axios.get(url);
+    const $ = cheerio.load(html);
 
-        if (title && idMatch) {
-          results.push({
-            id: idMatch[1],
-            title,
-            link: charLink,
-            img,
-            about
-          });
+    const name = $('h1 span[itemprop="name"]').first().text().trim();
+
+    const img = $('img.ac').first().attr('data-src') || $('img.ac').first().attr('src');
+
+    const description =
+      $('.left-column > .people-character-description').text().trim() ||
+      $('.js-scrollfix-bottom-rel .mb8').text().trim();
+
+    const animeography = [];
+    $('h2:contains("Animeography")')
+      .next('table')
+      .find('tr')
+      .each((_, tr) => {
+        const title = $(tr).find('td:nth-child(2) a').text();
+        const link = $(tr).find('td:nth-child(2) a').attr('href');
+        if (title && link) {
+          animeography.push({ title, link });
         }
       });
 
-      return res.status(200).json({ results });
-    } catch {
-      return res.status(500).json({ error: 'Failed to scrape character list' });
-    }
-  }
-
-  // Get character by ID
-  if (id) {
-    try {
-      const html = await fetch(`https://myanimelist.net/character/${id}`).then(r => r.text());
-      const $ = cheerio.load(html);
-
-      const name = $('h1 span[itemprop="name"]').first().text().trim();
-      const img = $('.js-picture-gallery img').first().attr('data-src') || $('.js-picture-gallery img').first().attr('src');
-      const description = $('.people-character-description').text().trim();
-
-      const animeography = [];
-      $('h2:contains("Animeography")').next('table').find('tr').each((_, tr) => {
-        const a = $(tr).find('td:nth-child(2) a');
-        animeography.push({
-          title: a.text(),
-          link: a.attr('href')
-        });
+    const voiceActors = [];
+    $('h2:contains("Voice Actors")')
+      .next('table')
+      .find('tr')
+      .each((_, tr) => {
+        const actorName = $(tr).find('td:nth-child(2) a').text().trim();
+        const lang = $(tr).find('td:last-child small').text().trim();
+        const link = $(tr).find('td:nth-child(2) a').attr('href');
+        const photo = $(tr).find('td:first-child img').attr('data-src') || $(tr).find('td:first-child img').attr('src');
+        if (actorName && lang) {
+          voiceActors.push({ actorName, lang, link, photo });
+        }
       });
 
-      return res.status(200).json({ id, name, img, description, animeography });
-    } catch {
-      return res.status(500).json({ error: 'Failed to scrape character detail' });
-    }
+    res.status(200).json({
+      name,
+      img,
+      description,
+      animeography,
+      voiceActors,
+      source: url,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to scrape character detail.' });
   }
-
-  return res.status(400).json({ error: 'Query ?name= or ?id= required' });
 }
